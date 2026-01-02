@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+# 1. Official Repo Updates (Fast, no sudo)
+if command -v checkupdates >/dev/null 2>&1; then
+    repo_count=$(checkupdates 2>/dev/null | wc -l)
+else
+    repo_count=0
+fi
+
+# 2. AUR Updates (Fast, assumes DB is already synced)
+# Using -Qua is the "query" mode which doesn't touch the internet or locks
+if command -v paru >/dev/null 2>&1; then
+    aur_count=$(paru -Qua 2>/dev/null | wc -l)
+elif command -v yay >/dev/null 2>&1; then
+    aur_count=$(yay -Qua 2>/dev/null | wc -l)
+else
+    aur_count=0
+fi
+
+# 3. Flatpak Updates 
+# We wrap this in a 5s timeout. If it takes longer, it returns 0.
+if command -v flatpak >/dev/null 2>&1; then
+    flatpak_count=$(timeout 5s flatpak remote-ls --updates --columns=application 2>/dev/null | wc -l)
+else
+    flatpak_count=0
+fi
+
+# 4. Sum it up
+total_updates=$((repo_count + aur_count + flatpak_count))
+
+# 5. Output for Quickshell (Strictly a single integer)
+echo $total_updates
