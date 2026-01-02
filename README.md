@@ -1,5 +1,5 @@
 # stuff
-just stuff overflow stuff. May or may not add things over time. Due to laziness I'm using it as a share for now.
+just overflow stuff. May or may not add things over time. Due to laziness I'm using it as a share for now. Main repo is self-hosted and a chore to open things up outside my tailnet.
 
 ## apps
 - app launcher and arch package manager script
