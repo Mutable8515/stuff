@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+
+# ------------------------------------------
+# APPS: Unified Arch Launcher & Package Manager
+# ------------------------------------------
+
+set -uo pipefail
+
+# --- Configuration ---
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omni-launcher"
+CACHE_APPS="$CACHE_DIR/apps.cache"
+CACHE_FLATHUB="$CACHE_DIR/flathub.cache"
+CACHE_MAX_AGE=300       # 5 minutes for Launcher
+CACHE_PKG_MAX_AGE=86400 # 24 hours for Flathub list
+
+# Icons (Nerd Font)
+ICON_GUI="󰀻 "
+ICON_TERM=" "
+ICON_FLATPAK="󰏖 "
+ICON_PKG="📦 "
+ICON_INST="󰗠 "
+
+# --- Terminal & Helper Detection ---
+detect_terminal() {
+    if [ -n "${KITTY_PID:-}" ]; then echo "kitty"; return; fi
+    for term in kitty foot alacritty ghostty wezterm gnome-terminal xterm; do
+        if command -v "$term" >/dev/null 2>&1; then echo "$term"; return; fi
+    done
+    echo "xterm"
+}
+TERMINAL=$(detect_terminal)
+
+if command -v paru &>/dev/null; then
+    AUR_HELPER="paru"
+    if command -v yay &>/dev/null; then
+        AUR_FALLBACK="yay"
+    else
+        AUR_FALLBACK="paru"
+    fi
+elif command -v yay &>/dev/null; then
+    AUR_HELPER="yay"
+    AUR_FALLBACK="yay"
+else
+    echo "Error: No AUR helper found." >&2
+    exit 1
+fi
+
+# --- State Management ---
+CURRENT_MODE="launch" 
+
+# --- Helpers ---
+ensure_cache_dir() { mkdir -p "$CACHE_DIR"; }
+
+# --- 1. LAUNCHER LOGIC ---
+
+get_desktop_dirs_mtime() {
+    local DIRS=("/usr/share/applications" "$HOME/.local/share/applications" "/var/lib/flatpak/exports/share/applications" "$HOME/.local/share/flatpak/exports/share/applications")
+    stat -c %Y "${DIRS[@]}" 2>/dev/null | sort -rn | head -1
+}
+
+launcher_cache_valid() {
+    [[ -f "$CACHE_APPS" ]] || return 1
+    local cache_age=$(($(date +%s) - $(stat -c %Y "$CACHE_APPS")))
+    local dirs_mtime=$(get_desktop_dirs_mtime)
+    [[ $cache_age -lt $CACHE_MAX_AGE && $(stat -c %Y "$CACHE_APPS") -gt $dirs_mtime ]]
+}
+
+build_launcher_list() {
+    local DIRS=("/usr/share/applications" "/usr/local/share/applications" "$HOME/.local/share/applications" "/var/lib/flatpak/exports/share/applications" "$HOME/.local/share/flatpak/exports/share/applications")
+    local list=""
+    local -A seen_names 
+
+    while IFS=$'\037' read -r name exec_cmd terminal desktop_file; do
+        [[ -z "$name" || -z "$exec_cmd" ]] && continue
+        if [[ -v "seen_names[$name]" ]]; then continue; fi
+        seen_names["$name"]=1
+
+        local icon="$ICON_GUI"
+        local app_type="gui"
+        if [[ "$desktop_file" == *"flatpak"* ]]; then icon="$ICON_FLATPAK"; app_type="flatpak"; 
+        elif [[ "$terminal" == "true" ]]; then icon="$ICON_TERM"; app_type="term"; fi
+
+        list+="${icon}${name}|${exec_cmd}|${app_type}|${desktop_file}"$'\n'
+    done < <(find -L "${DIRS[@]}" -name "*.desktop" -type f -print0 2>/dev/null | xargs -0 -r awk '
+        BEGIN { OFS="\037" }
+        FNR==1 { if (NR>1) print_entry(); name=""; exec=""; term="false"; in_entry=0; filename=FILENAME; }
+        function print_entry() { if (name!="" && exec!="") { gsub(/\|/, "-", name); print name, exec, term, filename } }
+        /^\[Desktop Entry\]/ { in_entry=1; next }
+        /^\[/ { if ($0!="[Desktop Entry]") in_entry=0 }
+        in_entry {
+            if (/^Name=/) { sub(/^Name=/, ""); if (name=="") name=$0 }
+            if (/^Exec=/) { sub(/^Exec=/, ""); gsub(/%[a-zA-Z]/,""); sub(/[ \t]+$/, ""); if (exec=="") exec=$0 }
+            if (/^Terminal=/) { sub(/^Terminal=/, ""); term=tolower($0) }
+            if (/^NoDisplay=true/ || /^Hidden=true/) { name=""; exec="" }
+        }
+        END { print_entry() }
+    ' 2>/dev/null)
+    echo -n "$list"
+}
+
+run_launcher() {
+    ensure_cache_dir
+    local list
+    if launcher_cache_valid; then list=$(cat "$CACHE_APPS"); else list=$(build_launcher_list | tee "$CACHE_APPS"); fi
+
+    local selected
+    # LAUNCHER: 40% height, Standard View
+    selected=$(echo "$list" | sort -t'|' -k1 | fzf \
+        --delimiter '|' --with-nth 1 --bind 'enter:accept' \
+        --header "󰀻 GUI | 󰏖 Flatpak |  Term   [ctrl-s] Install  [ctrl-x] Uninstall" \
+        --prompt "Run> " \
+        --style full --layout reverse --border \
+        --height 40% \
+        --expect="ctrl-s,ctrl-x" \
+    )
+    
+    local key=$(head -1 <<< "$selected")
+    local data=$(tail -n +2 <<< "$selected")
+
+    if [[ "$key" == "ctrl-s" ]]; then CURRENT_MODE="install"; return; fi
+    if [[ "$key" == "ctrl-x" ]]; then CURRENT_MODE="remove"; return; fi
+    [[ -z "$data" ]] && exit 0
+
+    local exec_cmd=$(echo "$data" | cut -d'|' -f2)
+    local app_type=$(echo "$data" | cut -d'|' -f3)
+    local desktop_file=$(echo "$data" | cut -d'|' -f4)
+
+    if command -v gtk-launch >/dev/null 2>&1 && [[ -f "$desktop_file" ]]; then
+        setsid gtk-launch "$(basename "$desktop_file")" >/dev/null 2>&1 &
+    elif [[ "$app_type" == "term" ]]; then
+        setsid "$TERMINAL" -e sh -c "$exec_cmd" >/dev/null 2>&1 &
+    else
+        setsid sh -c "$exec_cmd" >/dev/null 2>&1 &
+    fi
+    exit 0
+}
+
+# --- 2. INSTALLER LOGIC ---
+
+update_flathub_cache() {
+    if command -v flatpak >/dev/null 2>&1; then
+        echo "Updating Flathub Database..." >&2
+        flatpak remote-ls --app --columns=name,application flathub | \
+        awk -F '\t' -v icon="$ICON_FLATPAK" '{ OFS="|"; print icon $1, $2, "flatpak" }' > "$CACHE_FLATHUB"
+    else
+        touch "$CACHE_FLATHUB"
+    fi
+}
+
+get_install_list() {
+    # 1. Arch Repos
+    LC_ALL=C $AUR_FALLBACK -Slq | \
+    tr -cd '\11\12\40-\176' | \
+    awk -v icon="$ICON_PKG" '{ print icon $0 "|" $0 "|repo" }'
+
+    # 2. Flathub (Cached)
+    if [[ ! -f "$CACHE_FLATHUB" ]]; then update_flathub_cache; fi
+    
+    local cache_age=$(($(date +%s) - $(stat -c %Y "$CACHE_FLATHUB")))
+    if [[ $cache_age -gt $CACHE_PKG_MAX_AGE ]]; then update_flathub_cache; fi
+    
+    cat "$CACHE_FLATHUB"
+}
+
+preview_install() {
+    local item="$1"
+    local type=$(echo "$item" | cut -d'|' -f3)
+    local pkg=$(echo "$item" | cut -d'|' -f2)
+
+    if [[ "$type" == "flatpak" ]]; then
+        flatpak remote-info flathub "$pkg"
+    else
+        $AUR_FALLBACK -Sii "$pkg" 2>/dev/null || echo "Package info not found."
+    fi
+}
+export -f preview_install
+export AUR_HELPER
+export AUR_FALLBACK
+
+run_installer() {
+    ensure_cache_dir
+    local selected
+    
+    # INSTALLER: 100% Height, 70% Top Preview
+    selected=$(get_install_list | fzf --multi \
+        --delimiter '|' \
+        --with-nth 1 \
+        --preview 'bash -c "preview_install {}"' \
+        --preview-window="up:70%:wrap:border-bottom" \
+        --bind "alt-j:preview-down,alt-k:preview-up" \
+        --header "📦 INSTALLER   [ctrl-r] Run App  [ctrl-x] Uninstall Mode" \
+        --prompt "Install> " \
+        --style full --layout reverse --border \
+        --height 100% \
+        --expect="ctrl-r,ctrl-x" \
+    )
+
+    local key=$(head -1 <<< "$selected")
+    local items=$(tail -n +2 <<< "$selected")
+
+    if [[ "$key" == "ctrl-r" ]]; then CURRENT_MODE="launch"; return; fi
+    if [[ "$key" == "ctrl-x" ]]; then CURRENT_MODE="remove"; return; fi
+    [[ -z "$items" ]] && exit 0
+
+    local repo_pkgs=""
+    local flatpak_pkgs=""
+
+    while IFS= read -r item; do
+        local type=$(echo "$item" | cut -d'|' -f3)
+        local pkg=$(echo "$item" | cut -d'|' -f2)
+        if [[ "$type" == "flatpak" ]]; then flatpak_pkgs+="$pkg "; else repo_pkgs+="$pkg "; fi
+    done <<< "$items"
+
+    clear
+    # FIX: Run commands directly (not via xargs) so they can use the terminal (TTY) for confirmation prompts
+    if [[ -n "$repo_pkgs" ]]; then
+        echo "Installing System Packages: $repo_pkgs"
+        $AUR_HELPER -S $repo_pkgs
+    fi
+    if [[ -n "$flatpak_pkgs" ]]; then
+        echo "Installing Flatpaks: $flatpak_pkgs"
+        flatpak install -y $flatpak_pkgs
+    fi
+    echo ""; read -p "Press Enter to return..."
+}
+
+# --- 3. UNINSTALLER LOGIC ---
+
+get_remove_list() {
+    # 1. Installed Repo Pkgs
+    $AUR_HELPER -Qq | awk -v icon="$ICON_INST" '{ print icon $0 "|" $0 "|repo" }'
+    
+    # 2. Installed Flatpaks
+    if command -v flatpak >/dev/null 2>&1; then
+        flatpak list --app --columns=name,application | \
+        awk -F '\t' -v icon="$ICON_FLATPAK" '{ OFS="|"; print icon $1, $2, "flatpak" }'
+    fi
+}
+
+preview_remove() {
+    local item="$1"
+    local type=$(echo "$item" | cut -d'|' -f3)
+    local pkg=$(echo "$item" | cut -d'|' -f2)
+
+    if [[ "$type" == "flatpak" ]]; then
+        flatpak info "$pkg"
+    else
+        $AUR_HELPER -Qi "$pkg"
+    fi
+}
+export -f preview_remove
+
+run_remover() {
+    local selected
+    
+    # REMOVER: 100% Height, 70% Top Preview
+    selected=$(get_remove_list | fzf --multi \
+        --delimiter '|' \
+        --with-nth 1 \
+        --preview 'bash -c "preview_remove {}"' \
+        --preview-window="up:70%:wrap:border-bottom" \
+        --bind "alt-j:preview-down,alt-k:preview-up" \
+        --header "🗑️ UNINSTALLER   [ctrl-r] Run App  [ctrl-s] Install Mode" \
+        --prompt "Remove> " \
+        --style full --layout reverse --border \
+        --height 100% \
+        --expect="ctrl-r,ctrl-s" \
+    )
+
+    local key=$(head -1 <<< "$selected")
+    local items=$(tail -n +2 <<< "$selected")
+
+    if [[ "$key" == "ctrl-r" ]]; then CURRENT_MODE="launch"; return; fi
+    if [[ "$key" == "ctrl-s" ]]; then CURRENT_MODE="install"; return; fi
+    [[ -z "$items" ]] && exit 0
+
+    local repo_pkgs=""
+    local flatpak_pkgs=""
+
+    while IFS= read -r item; do
+        local type=$(echo "$item" | cut -d'|' -f3)
+        local pkg=$(echo "$item" | cut -d'|' -f2)
+        if [[ "$type" == "flatpak" ]]; then flatpak_pkgs+="$pkg "; else repo_pkgs+="$pkg "; fi
+    done <<< "$items"
+
+    clear
+    # FIX: Run commands directly so they can use the terminal (TTY) for confirmation prompts
+    if [[ -n "$repo_pkgs" ]]; then
+        echo "Removing System Packages: $repo_pkgs"
+        $AUR_HELPER -Rns $repo_pkgs
+    fi
+    if [[ -n "$flatpak_pkgs" ]]; then
+        echo "Removing Flatpaks: $flatpak_pkgs"
+        flatpak uninstall -y $flatpak_pkgs
+    fi
+    echo ""; read -p "Press Enter to return..."
+}
+
+# --- Main Loop ---
+
+while true; do
+    case "$CURRENT_MODE" in
+        launch) run_launcher ;;
+        install) run_installer ;;
+        remove) run_remover ;;
+        *) exit 1 ;;
+    esac
+done
