@@ -12,6 +12,7 @@ just overflow stuff. May or may not add things over time. Due to laziness I'm us
    - Arch focused. Requires yay or paru and pacman-contrib package for checkupdate command (more reliable for getting repo update counts)
    - Also checks flatpak/flathub for available updates on the system
    - Single integer output aggregates all the sources and works especially well for something like the update-count plugin in noctalia-shell
+   - flatpak has 5s timeout because it occasionally can exceed. Updates are infrequent anyway, and exceeding 5s to check is exceedingly rare. Just a safety to not waste time.
 
   ## update 
   - update is a simple update script that pairs well with update count
