@@ -7,7 +7,7 @@
 set -uo pipefail
 
 # --- Configuration ---
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omni-launcher"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/apps-omni-launcher"
 CACHE_APPS="$CACHE_DIR/apps.cache"
 CACHE_FLATHUB="$CACHE_DIR/flathub.cache"
 CACHE_MAX_AGE=300       # 5 minutes for Launcher
