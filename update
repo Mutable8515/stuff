@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+
+# Determine AUR helper once
+if command -v paru >/dev/null; then
+    AUR_HELPER="paru"
+elif command -v yay >/dev/null; then
+    AUR_HELPER="yay"
+else
+    echo "No AUR helper found. Install paru or yay."
+    exit 1
+fi
+
+# ASCII banner
+echo -e "\e[34m
+░█▀▀░█░█░█▀▀░▀█▀░█▀▀░█▄█░░░█░█░█▀█░█▀▄░█▀█░▀█▀░█▀▀
+░▀▀█░░█░░▀▀█░░█░░█▀▀░█░█░░░█░█░█▀▀░█░█░█▀█░░█░░█▀▀
+░▀▀▀░░▀░░▀▀▀░░▀░░▀▀▀░▀░▀░░░▀▀▀░▀░░░▀▀░░▀░▀░░▀░░▀▀▀\e[0m
+"
+
+# List updates
+PACMAN_UPDATES=$(checkupdates)
+if [[ -n "$PACMAN_UPDATES" ]]; then
+    echo -e "\e[34mPacman:\e[0m"
+    echo "$PACMAN_UPDATES"
+    echo
+fi
+
+AUR_UPDATES=$($AUR_HELPER -Qua)
+if [[ -n "$AUR_UPDATES" ]]; then
+    echo -e "\e[34mAUR:\e[0m"
+    echo "$AUR_UPDATES"
+    echo
+fi
+
+if command -v flatpak >/dev/null; then
+    FLATPAK_UPDATES=$(flatpak remote-ls --updates --columns=application)
+    if [[ -n "$FLATPAK_UPDATES" ]]; then
+        echo -e "\e[34mFlatpak:\e[0m"
+        echo "$FLATPAK_UPDATES"
+        echo
+    fi
+fi
+
+# Confirm
+if command -v gum >/dev/null; then
+    gum confirm "Proceed with updates?" || exit 1
+else
+    read -p "Proceed with updates? [y/N] " -n 1 -r
+    echo
+    [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+fi
+
+# Update everything
+echo -e "\n\e[34mUpdating system packages...\e[0m"
+$AUR_HELPER -Syu --noconfirm
+
+if [[ -n "${FLATPAK_UPDATES:-}" ]]; then
+    echo -e "\n\e[34mUpdating Flatpak...\e[0m"
+    flatpak update -y
+fi
+
+echo -e "\e[32m
+░█░█░█▀█░█▀▄░█▀█░▀█▀░█▀▀░█▀▀░░░█▀▀░█▀█░█▄█░█▀█░█░░░█▀▀░▀█▀░█▀▀
+░█░█░█▀▀░█░█░█▀█░░█░░█▀▀░▀▀█░░░█░░░█░█░█░█░█▀▀░█░░░█▀▀░░█░░█▀▀
+░▀▀▀░▀░░░▀▀░░▀░▀░░▀░░▀▀▀░▀▀▀░░░▀▀▀░▀▀▀░▀░▀░▀░░░▀▀▀░▀▀▀░░▀░░▀▀▀\e[0m
+"
+
+read -p "Press enter to close"
